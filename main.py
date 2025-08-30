@@ -22,12 +22,33 @@ def detect_gpu():
 GPU_AVAILABLE = detect_gpu()  # 程序启动时检测一次
 
 
+import os
+import subprocess
+import json
+from PyQt6.QtCore import QThread, pyqtSignal
+
+
+def get_duration(video_path):
+    """用 ffprobe 获取视频时长（秒）"""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "json", video_path
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        info = json.loads(res.stdout)
+        return float(info["format"]["duration"])
+    except Exception:
+        return 0
+
+
 class FFmpegWorker(QThread):
     progress_signal = pyqtSignal(int)
     finished_signal = pyqtSignal()
     status_signal = pyqtSignal(str)
 
-    def __init__(self, video_path, output_dir, start_sec, end_sec, mode, param, fmt, quality, total_frames):
+    def __init__(self, video_path, output_dir, start_sec, end_sec, mode, param, fmt, quality, use_gpu=False):
         super().__init__()
         self.video_path = video_path
         self.output_dir = output_dir
@@ -35,82 +56,93 @@ class FFmpegWorker(QThread):
         self.end_sec = end_sec
         self.mode = mode
         self.param = param
-        self.fmt = fmt
+        self.fmt = fmt.lower()
         self.quality = quality
-        self.total_frames = total_frames
+        self.use_gpu = use_gpu
         self._stop = False
         self.proc = None
+
+        # 🔹 提前获取总时长，保证进度计算正确
+        full_duration = get_duration(video_path)
+        if self.end_sec > 0:
+            self.duration = min(full_duration, self.end_sec) - self.start_sec
+        else:
+            self.duration = full_duration - self.start_sec
+        if self.duration <= 0:
+            self.duration = full_duration
 
     def run(self):
         try:
             os.makedirs(self.output_dir, exist_ok=True)
+
             input_options = []
-            if GPU_AVAILABLE:
+            if self.use_gpu:
                 input_options += ["-hwaccel", "cuda"]
 
+            output_pattern = os.path.join(self.output_dir, f"frame_%05d.{self.fmt}")
+
             if self.mode == "每N秒取1帧":
-                fps_option = f"1/{self.param}"
-                cmd = [
-                    "ffmpeg",
-                    *input_options,
-                    "-ss", str(self.start_sec),
-                    "-to", str(self.end_sec),
-                    "-i", self.video_path,
-                    "-vf", f"fps={fps_option}",
-                    os.path.join(self.output_dir, f"frame_%05d.{self.fmt.lower()}")
-                ]
+                filter_option = f"fps=1/{self.param}"
             else:
-                select_filter = f"not(mod(n\\,{self.param}))"
-                cmd = [
-                    "ffmpeg",
-                    *input_options,
-                    "-ss", str(self.start_sec),
-                    "-to", str(self.end_sec),
-                    "-i", self.video_path,
-                    "-vf", f"select='{select_filter}',setpts=N/FRAME_RATE/TB",
-                    os.path.join(self.output_dir, f"frame_%05d.{self.fmt.lower()}")
-                ]
-            if self.fmt.lower() == "jpg":
-                cmd.insert(-1, "-q:v")
-                cmd.insert(-1, str(100 - self.quality))
+                filter_option = f"select='not(mod(n\\,{self.param}))',setpts=N/FRAME_RATE/TB"
+
+            cmd = [
+                "ffmpeg",
+                *input_options,
+                "-ss", str(self.start_sec),
+                "-to", str(self.end_sec),
+                "-i", self.video_path,
+                "-vf", filter_option
+            ]
+
+            # JPG 参数限制在 1~31，避免 FFmpeg 崩溃
+            if self.fmt == "jpg":
+                q = max(1, min(31, int(31 * (100 - self.quality) / 100)))
+                cmd += ["-q:v", str(q)]
+
+            cmd += [output_pattern, "-progress", "pipe:1", "-nostats"]
 
             self.status_signal.emit("提取中...")
+
+            # 🔹 避免 Windows 默认 GBK 解码错误
             self.proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
-                errors="ignore"
+                errors="ignore",
+                bufsize=1,
+                universal_newlines=True
             )
 
-            # 使用迭代方式读取 stderr，避免 readline 阻塞
-            for line in self.proc.stderr:
+            for line in iter(self.proc.stdout.readline, ''):
                 if self._stop:
                     self.proc.terminate()
                     self.status_signal.emit("已终止处理")
                     break
-                if "frame=" in line:
+
+                line = line.strip()
+                if line.startswith("out_time_ms="):
                     try:
-                        for part in line.strip().split():
-                            if part.startswith("frame="):
-                                frame_num = int(part.split("=")[1])
-                                if self.total_frames and self.total_frames != "未知":
-                                    progress = min(int(frame_num / int(self.total_frames) * 100), 100)
-                                else:
-                                    total_sec = self.end_sec - self.start_sec
-                                    progress = min(int(frame_num / (total_sec * 30) * 100), 100)
-                                self.progress_signal.emit(progress)
-                    except:
+                        out_ms = int(line.split("=")[1]) / 1e6  # 转成秒
+                        if self.duration > 0:
+                            progress = min(int(out_ms / self.duration * 100), 100)
+                            self.progress_signal.emit(progress)
+                    except Exception:
                         pass
+                elif line.startswith("progress=end"):
+                    self.progress_signal.emit(100)
 
             self.proc.wait()
             if not self._stop:
                 self.progress_signal.emit(100)
                 self.status_signal.emit("提取完成")
+
             self.finished_signal.emit()
+
         except Exception as e:
-            self.status_signal.emit(f"提取错误: {str(e)}")
+            self.status_signal.emit(f"提取错误: {e}")
             self.finished_signal.emit()
 
     def stop(self):
@@ -118,6 +150,9 @@ class FFmpegWorker(QThread):
             self._stop = True
             self.proc.terminate()
             self.status_signal.emit("已终止处理")
+
+
+
 
 
 class SingleVideoApp(QWidget):
@@ -286,7 +321,28 @@ class SingleVideoApp(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(350)
         self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: none;
+                border-radius: 8px;
+                background-color: #e6e6e6;     /* 背景浅灰 */
+                text-align: center;
+                padding-right: 6px;
+                color: #333333;
+                font-weight: bold;
+            }
+            QProgressBar::chunk {
+                border-radius: 8px;            /* 整体圆角 */
+                background: qlineargradient(
+                    spread:pad, x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #4caf50, stop:1 #81c784
+                );
+                margin: 0px;                   /* 避免出现断层 */
+            }
+        """)
+
         self.progress_label = QLabel("准备就绪")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # 🔹保证始终居中
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_label)
         layout.addLayout(progress_layout)
@@ -399,34 +455,52 @@ class SingleVideoApp(QWidget):
         if not self.output_input.text():
             QMessageBox.warning(self, "提示", "请先选择输出路径")
             return
+
         start_sec, end_sec = self.get_selected_range_seconds()
-        if start_sec is None: return
+        if start_sec is None:
+            return
 
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+
         mode = self.mode_box.currentText()
         param = self.param_input.value()
         fmt = self.format_box.currentText()
         quality = self.quality_input.value() if fmt.lower() == "jpg" else 0
-        total_frames = self.info_frames.text()
+        use_gpu = False
+
+        # 🔹 新增：生成视频专属输出文件夹
+        import datetime
+        base_output = self.output_input.text()
+        video_name = os.path.splitext(os.path.basename(self.file_input.text()))[0]
+        timestamp = datetime.datetime.now().strftime("%Y年%m月%d日%H时%M分%S秒")
+
+        output_dir = os.path.join(base_output, f"{video_name}_帧提取_{timestamp}")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 使用新的 Worker
         self.worker = FFmpegWorker(
-            self.file_input.text(),
-            self.output_input.text(),
-            start_sec,
-            end_sec,
-            mode,
-            param,
-            fmt,
-            quality,
-            total_frames
+            video_path=self.file_input.text(),
+            output_dir=output_dir,
+            start_sec=start_sec,
+            end_sec=end_sec,
+            mode=mode,
+            param=param,
+            fmt=fmt,
+            quality=quality,
+            use_gpu=use_gpu
         )
+
+        # 绑定信号
         self.worker.progress_signal.connect(self.progress_bar.setValue)
         self.worker.status_signal.connect(self.progress_label.setText)
         self.worker.finished_signal.connect(self.extraction_finished)
-        self.worker.start()
+
+        # 启动线程
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.progress_label.setText("正在提取...")
+        self.worker.start()
 
     def stop_extraction(self):
         if self.worker: self.worker.stop()
