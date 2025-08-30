@@ -44,6 +44,25 @@ class SingleVideoApp(QWidget):
         path_layout.addStretch(1)
         layout.addLayout(path_layout)
 
+        # 在 setup_ui() 中文件选择下面添加输出路径
+        output_layout = QHBoxLayout()
+        output_label = QLabel("📂 输出路径:")
+        self.output_input = QLineEdit()
+        self.output_input.setReadOnly(True)
+        self.output_input.setFixedWidth(350)
+        # 读取上次设置的路径
+        self.output_input.setText(self.settings.value("last_output_dir", os.path.expanduser("~")))
+        self.output_btn = QPushButton("选择")
+        self.output_btn.setFixedWidth(60)
+        self.output_btn.clicked.connect(self.choose_output_dir)
+
+        output_layout.addStretch(1)
+        output_layout.addWidget(output_label)
+        output_layout.addWidget(self.output_input)
+        output_layout.addWidget(self.output_btn)
+        output_layout.addStretch(1)
+        layout.addLayout(output_layout)
+
         # === 视频信息区 ===
         self.info_group = QGroupBox("📊 视频信息")
         info_layout = QFormLayout()
@@ -190,6 +209,14 @@ class SingleVideoApp(QWidget):
         layout.addLayout(progress_layout)
 
         self.setLayout(layout)
+
+    def choose_output_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择输出文件夹", self.output_input.text() or os.path.expanduser("~")
+        )
+        if dir_path:
+            self.output_input.setText(dir_path)
+            self.settings.setValue("last_output_dir", dir_path)
 
     def reset_time_range(self):
         """重置时间范围到视频默认时长"""
