@@ -65,7 +65,6 @@ class FFmpegWorker(QThread):
             full_duration = get_duration(video_path)
             video_info = {"duration": full_duration, "fps": 0, "total_frames": 0}
         self.video_info = video_info
-        print(video_info)
         full_duration = self.video_info.get("duration", 0)
         if self.end_sec > 0:
             self.duration = min(full_duration, self.end_sec) - self.start_sec
@@ -84,10 +83,18 @@ class FFmpegWorker(QThread):
 
             output_pattern = os.path.join(self.output_dir, f"frame_%05d.{self.fmt}")
 
+            # 计算 total_frames
             if self.mode == "每N秒取1帧":
                 filter_option = f"fps=1/{self.param}"
-            else:
+                total_frames = max(1, int(self.duration / self.param))
+            else:  # 每N帧取1帧
                 filter_option = f"select='not(mod(n\\,{self.param}))',setpts=N/FRAME_RATE/TB"
+                fps = self.video_info.get("fps", 0)
+                if fps > 0:
+                    total_frames_raw = int((self.end_sec - self.start_sec) * fps)
+                    total_frames = max(1, total_frames_raw // self.param)
+                else:
+                    total_frames = 1  # 保底
 
             cmd = [
                 "ffmpeg",
@@ -98,7 +105,6 @@ class FFmpegWorker(QThread):
                 "-vf", filter_option
             ]
 
-            # JPG 参数限制在 1~31，避免 FFmpeg 崩溃
             if self.fmt == "jpg":
                 q = max(1, min(31, int(31 * (100 - self.quality) / 100)))
                 cmd += ["-q:v", str(q)]
@@ -107,7 +113,6 @@ class FFmpegWorker(QThread):
 
             self.status_signal.emit("提取中...")
 
-            # 🔹 避免 Windows 默认 GBK 解码错误
             self.proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -119,6 +124,7 @@ class FFmpegWorker(QThread):
                 universal_newlines=True
             )
 
+            extracted_frames = 0
             for line in iter(self.proc.stdout.readline, ''):
                 if self._stop:
                     self.proc.terminate()
@@ -126,14 +132,27 @@ class FFmpegWorker(QThread):
                     break
 
                 line = line.strip()
-                if line.startswith("out_time_ms="):
+
+                # 每N秒模式用 out_time_ms 计算进度
+                if self.mode == "每N秒取1帧" and line.startswith("out_time_ms="):
                     try:
-                        out_ms = int(line.split("=")[1]) / 1e6  # 转成秒
-                        if self.duration > 0:
-                            progress = min(int(out_ms / self.duration * 100), 100)
-                            self.progress_signal.emit(progress)
+                        out_ms_str = line[len("out_time_ms="):]
+                        out_ms = int(out_ms_str)
+                        progress = min(int(out_ms / (self.duration * 1e6) * 100), 100)
+                        self.progress_signal.emit(progress)
                     except Exception:
                         pass
+
+                # 每N帧模式用 frame= 计算进度
+                elif self.mode == "每N帧取1帧" and line.startswith("frame="):
+                    try:
+                        frame_str = line[len("frame="):]
+                        extracted_frames = int(frame_str)
+                        progress = min(int(extracted_frames / total_frames * 100), 100)
+                        self.progress_signal.emit(progress)
+                    except Exception:
+                        pass
+
                 elif line.startswith("progress=end"):
                     self.progress_signal.emit(100)
 
