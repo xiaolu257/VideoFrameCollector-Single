@@ -5,10 +5,8 @@ import subprocess
 import json
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFileDialog, QProgressBar, QComboBox,
-    QSpinBox, QApplication, QGroupBox, QFormLayout,
-    QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
+    QProgressBar, QComboBox, QSpinBox, QApplication, QGroupBox, QFormLayout, QMessageBox
 )
 
 
@@ -16,11 +14,11 @@ class SingleVideoApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("单视频帧提取器")
-        self.setGeometry(400, 150, 600, 400)
+        self.setGeometry(400, 150, 700, 450)
         self.settings = QSettings("MyCompany", "SingleVideoExtractor")
 
         self.setup_ui()
-        # === 启动时自动加载上次选择的视频信息 ===
+        # 启动时自动加载上次选择的视频信息
         last_file = self.settings.value("last_file", "")
         if last_file and os.path.isfile(last_file):
             self.load_video_info(last_file)
@@ -36,11 +34,9 @@ class SingleVideoApp(QWidget):
         self.file_input.setReadOnly(True)
         self.file_input.setFixedWidth(350)
         self.file_input.setText(self.settings.value("last_file", ""))
-
         self.browse_btn = QPushButton("浏览")
         self.browse_btn.setFixedWidth(60)
         self.browse_btn.clicked.connect(self.choose_file)
-
         path_layout.addStretch(1)
         path_layout.addWidget(path_label)
         path_layout.addWidget(self.file_input)
@@ -51,23 +47,68 @@ class SingleVideoApp(QWidget):
         # === 视频信息区 ===
         self.info_group = QGroupBox("📊 视频信息")
         info_layout = QFormLayout()
-
         self.info_name = QLabel("-")
         self.info_type = QLabel("-")
         self.info_duration = QLabel("-")
         self.info_resolution = QLabel("-")
         self.info_fps = QLabel("-")
         self.info_frames = QLabel("-")
-
         info_layout.addRow("文件名:", self.info_name)
         info_layout.addRow("类型:", self.info_type)
         info_layout.addRow("时长:", self.info_duration)
         info_layout.addRow("分辨率:", self.info_resolution)
         info_layout.addRow("帧率 (FPS):", self.info_fps)
         info_layout.addRow("总帧数:", self.info_frames)
-
         self.info_group.setLayout(info_layout)
         layout.addWidget(self.info_group)
+
+        # === 提取范围 ===
+        self.range_group = QGroupBox("⏱️ 提取范围")
+        range_layout = QHBoxLayout()
+
+        # 起始时间
+        range_layout.addWidget(QLabel("起始时间:"))
+        self.start_hour = QSpinBox()
+        self.start_hour.setRange(0, 999)  # 可显示3位数字
+        self.start_hour.setFixedWidth(60)
+        self.start_min = QSpinBox()
+        self.start_min.setRange(0, 59)
+        self.start_min.setFixedWidth(60)
+        self.start_sec = QSpinBox()
+        self.start_sec.setRange(0, 59)
+        self.start_sec.setFixedWidth(60)
+        range_layout.addWidget(self.start_hour)
+        range_layout.addWidget(QLabel("时"))
+        range_layout.addWidget(self.start_min)
+        range_layout.addWidget(QLabel("分"))
+        range_layout.addWidget(self.start_sec)
+        range_layout.addWidget(QLabel("秒"))
+
+        # 结束时间
+        range_layout.addWidget(QLabel("结束时间:"))
+        self.end_hour = QSpinBox()
+        self.end_hour.setRange(0, 999)  # 可显示3位数字
+        self.end_hour.setFixedWidth(60)
+        self.end_min = QSpinBox()
+        self.end_min.setRange(0, 59)
+        self.end_min.setFixedWidth(60)
+        self.end_sec = QSpinBox()
+        self.end_sec.setRange(0, 59)
+        self.end_sec.setFixedWidth(60)
+        range_layout.addWidget(self.end_hour)
+        range_layout.addWidget(QLabel("时"))
+        range_layout.addWidget(self.end_min)
+        range_layout.addWidget(QLabel("分"))
+        range_layout.addWidget(self.end_sec)
+        range_layout.addWidget(QLabel("秒"))
+
+        # 添加重置按钮
+        self.reset_range_btn = QPushButton("重置")
+        self.reset_range_btn.clicked.connect(self.reset_time_range)
+        range_layout.addWidget(self.reset_range_btn)
+
+        self.range_group.setLayout(range_layout)
+        layout.addWidget(self.range_group)
 
         # === 提取模式 ===
         mode_layout = QHBoxLayout()
@@ -76,12 +117,10 @@ class SingleVideoApp(QWidget):
         self.mode_box = QComboBox()
         self.mode_box.addItems(["每N秒取1帧", "每N帧取1帧"])
         self.mode_box.setFixedWidth(180)
-
         param_label = QLabel("参数N:")
         self.param_input = QSpinBox()
         self.param_input.setRange(1, 3600)
         self.param_input.setValue(1)
-
         mode_layout.addWidget(mode_label)
         mode_layout.addWidget(self.mode_box)
         mode_layout.addWidget(param_label)
@@ -109,7 +148,6 @@ class SingleVideoApp(QWidget):
         self.format_box.addItems(["PNG", "JPG"])
         self.format_box.setFixedWidth(100)
         self.format_box.currentIndexChanged.connect(self.toggle_quality_input)
-
         self.quality_label = QLabel("压缩质量:")
         self.quality_input = QSpinBox()
         self.quality_input.setRange(1, 100)
@@ -117,7 +155,6 @@ class SingleVideoApp(QWidget):
         self.quality_input.setFixedWidth(100)
         self.quality_label.setVisible(False)
         self.quality_input.setVisible(False)
-
         format_layout.addWidget(format_label)
         format_layout.addWidget(self.format_box)
         format_layout.addWidget(self.quality_label)
@@ -127,19 +164,15 @@ class SingleVideoApp(QWidget):
         # === 控制按钮 ===
         btn_layout = QHBoxLayout()
         btn_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-
         self.start_btn = QPushButton("🚀 开始提取")
         self.start_btn.setFixedWidth(120)
-
         self.pause_resume_btn = QPushButton("⏸ 暂停")
         self.pause_resume_btn.setFixedWidth(120)
         self.pause_resume_btn.setEnabled(False)
-
         self.stop_btn = QPushButton("⏹ 停止")
         self.stop_btn.setFixedWidth(120)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setStyleSheet("color: red;")
-
         btn_layout.addWidget(self.start_btn)
         btn_layout.addWidget(self.pause_resume_btn)
         btn_layout.addWidget(self.stop_btn)
@@ -148,18 +181,29 @@ class SingleVideoApp(QWidget):
         # === 进度显示 ===
         progress_layout = QVBoxLayout()
         progress_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(350)
         self.progress_bar.setVisible(False)
-        progress_layout.addWidget(self.progress_bar)
-
         self.progress_label = QLabel("准备就绪")
+        progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_label)
-
         layout.addLayout(progress_layout)
 
         self.setLayout(layout)
+
+    def reset_time_range(self):
+        """重置时间范围到视频默认时长"""
+        # 起始时间置0
+        self.start_hour.setValue(0)
+        self.start_min.setValue(0)
+        self.start_sec.setValue(0)
+        # 结束时间置视频总时长
+        total_sec = int(getattr(self, "video_duration_seconds", 0))
+        h, rem = divmod(total_sec, 3600)
+        m, s = divmod(rem, 60)
+        self.end_hour.setValue(h)
+        self.end_min.setValue(m)
+        self.end_sec.setValue(s)
 
     def toggle_quality_input(self, index):
         is_jpg = self.format_box.currentText().lower() == "jpg"
@@ -195,7 +239,7 @@ class SingleVideoApp(QWidget):
         return "".join(parts)
 
     def load_video_info(self, path):
-        """用 ffprobe 获取视频信息"""
+        """用 ffprobe 获取视频信息并更新UI和时间范围"""
         try:
             cmd = [
                 "ffprobe", "-v", "error",
@@ -230,15 +274,46 @@ class SingleVideoApp(QWidget):
             self.info_fps.setText(f"{fps:.2f}" if fps else "未知")
             self.info_frames.setText(total_frames)
 
+            # 保存视频总时长
+            self.video_duration_seconds = int(duration)
+
+            # 设置默认提取范围
+            h, rem = divmod(self.video_duration_seconds, 3600)
+            m, s = divmod(rem, 60)
+            # 起始时间默认0
+            self.start_hour.setValue(0)
+            self.start_min.setValue(0)
+            self.start_sec.setValue(0)
+            # 结束时间默认视频总时长
+            self.end_hour.setValue(h)
+            self.end_min.setValue(m)
+            self.end_sec.setValue(s)
+
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法读取视频信息：\n{str(e)}")
-            # 重置为默认
+            # 重置UI
             self.info_name.setText("-")
             self.info_type.setText("-")
             self.info_duration.setText("-")
             self.info_resolution.setText("-")
             self.info_fps.setText("-")
             self.info_frames.setText("-")
+            self.start_hour.setValue(0)
+            self.start_min.setValue(0)
+            self.start_sec.setValue(0)
+            self.end_hour.setValue(0)
+            self.end_min.setValue(0)
+            self.end_sec.setValue(0)
+            self.video_duration_seconds = 0
+
+    def get_selected_range_seconds(self):
+        """返回用户选择的起止时间（秒数）"""
+        start_seconds = self.start_hour.value() * 3600 + self.start_min.value() * 60 + self.start_sec.value()
+        end_seconds = self.end_hour.value() * 3600 + self.end_min.value() * 60 + self.end_sec.value()
+        if start_seconds >= end_seconds:
+            QMessageBox.warning(self, "错误", "起始时间必须小于结束时间")
+            return None, None
+        return start_seconds, end_seconds
 
 
 if __name__ == "__main__":
