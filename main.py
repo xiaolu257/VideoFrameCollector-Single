@@ -507,6 +507,10 @@ class SingleVideoApp(QWidget):
         return start_seconds, end_seconds
 
     def start_extraction(self):
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "提示", "正在提取，请等待完成或先终止处理")
+            return
+
         if not self.file_input.text():
             QMessageBox.warning(self, "提示", "请先选择视频文件")
             return
@@ -518,7 +522,8 @@ class SingleVideoApp(QWidget):
         if start_sec is None:
             return
 
-        self.start_btn.setEnabled(False)
+        # 🔹 禁用参数控件，保持终止按钮可用
+        self.toggle_ui_enabled(False)
         self.stop_btn.setEnabled(True)
 
         mode = self.mode_box.currentText()
@@ -527,7 +532,6 @@ class SingleVideoApp(QWidget):
         quality = self.quality_input.value() if fmt.lower() == "jpg" else 0
         use_gpu = False
 
-        # 🔹 生成视频专属输出文件夹
         import datetime
         base_output = self.output_input.text()
         video_name = os.path.splitext(os.path.basename(self.file_input.text()))[0]
@@ -535,17 +539,14 @@ class SingleVideoApp(QWidget):
         output_dir = os.path.join(base_output, f"{video_name}_帧提取_{timestamp}")
         os.makedirs(output_dir, exist_ok=True)
 
-        # 🔹 使用缓存的视频信息
         video_info = getattr(self, "current_video_info", None)
         if video_info is None or video_info.get("duration", 0) <= 0:
-            # 缓存无效，重新获取
             video_info = {
                 "duration": getattr(self, "video_duration_seconds", 0),
                 "fps": float(self.info_fps.text()) if self.info_fps.text() != "未知" else 0,
                 "total_frames": int(self.info_frames.text()) if str(self.info_frames.text()).isdigit() else 0
             }
 
-        # 🔹 创建 Worker
         self.worker = FFmpegWorker(
             video_path=self.file_input.text(),
             output_dir=output_dir,
@@ -564,19 +565,56 @@ class SingleVideoApp(QWidget):
         self.worker.status_signal.connect(self.progress_label.setText)
         self.worker.finished_signal.connect(self.extraction_finished)
 
-        # 启动线程
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.progress_label.setText("正在提取...")
         self.worker.start()
 
     def stop_extraction(self):
-        if self.worker: self.worker.stop()
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.progress_label.setText("终止中...")
+            self.progress_bar.setValue(0)
+            # 提取完成后 extraction_finished 会恢复 UI
 
     def extraction_finished(self):
-        self.start_btn.setEnabled(True)
+        """提取完成或终止后恢复 UI"""
+        self.toggle_ui_enabled(True)
         self.stop_btn.setEnabled(False)
+        if self.worker and self.worker._stop:
+            self.progress_label.setText("已终止处理")
+        else:
+            self.progress_label.setText("提取完成")
+            self.progress_bar.setValue(100)
         self.worker = None
+
+    def toggle_ui_enabled(self, enabled: bool):
+        """
+        控制提取期间可编辑的 UI 控件
+        enabled: True => 恢复可编辑
+                 False => 禁止编辑参数（但终止按钮除外）
+        """
+        # 影响提取参数的控件
+        self.file_input.setEnabled(enabled)
+        self.browse_btn.setEnabled(enabled)
+        self.output_input.setEnabled(enabled)
+        self.output_btn.setEnabled(enabled)
+        self.start_hour.setEnabled(enabled)
+        self.start_min.setEnabled(enabled)
+        self.start_sec.setEnabled(enabled)
+        self.end_hour.setEnabled(enabled)
+        self.end_min.setEnabled(enabled)
+        self.end_sec.setEnabled(enabled)
+        self.reset_range_btn.setEnabled(enabled)  # 重置按钮也禁用
+        self.mode_box.setEnabled(enabled)
+        self.param_input.setEnabled(enabled)
+        self.format_box.setEnabled(enabled)
+        self.quality_input.setEnabled(enabled)
+
+        # 开始按钮仅在 enabled=True 时可用
+        self.start_btn.setEnabled(enabled)
+
+        # stop_btn 不受此影响，保持单独控制
 
 
 if __name__ == "__main__":
