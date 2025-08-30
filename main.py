@@ -1,8 +1,9 @@
 # Project Path: ui/single_video_window.py
-import os
-import sys
-import subprocess
 import json
+import os
+import subprocess
+import sys
+
 from PyQt6.QtCore import Qt, QSettings, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
@@ -22,12 +23,6 @@ def detect_gpu():
 GPU_AVAILABLE = detect_gpu()  # 程序启动时检测一次
 
 
-import os
-import subprocess
-import json
-from PyQt6.QtCore import QThread, pyqtSignal
-
-
 def get_duration(video_path):
     """用 ffprobe 获取视频时长（秒）"""
     cmd = [
@@ -43,12 +38,14 @@ def get_duration(video_path):
         return 0
 
 
+# FFmpegWorker 修改
 class FFmpegWorker(QThread):
     progress_signal = pyqtSignal(int)
     finished_signal = pyqtSignal()
     status_signal = pyqtSignal(str)
 
-    def __init__(self, video_path, output_dir, start_sec, end_sec, mode, param, fmt, quality, use_gpu=False):
+    def __init__(self, video_path, output_dir, start_sec, end_sec, mode, param, fmt, quality, video_info=None,
+                 use_gpu=False):
         super().__init__()
         self.video_path = video_path
         self.output_dir = output_dir
@@ -62,8 +59,14 @@ class FFmpegWorker(QThread):
         self._stop = False
         self.proc = None
 
-        # 🔹 提前获取总时长，保证进度计算正确
-        full_duration = get_duration(video_path)
+        # 🔹 使用传入的 video_info，只有在不合法时才获取
+        if video_info is None or video_info.get("duration", 0) <= 0:
+            # video_info 无效，重新获取
+            full_duration = get_duration(video_path)
+            video_info = {"duration": full_duration, "fps": 0, "total_frames": 0}
+        self.video_info = video_info
+        print(video_info)
+        full_duration = self.video_info.get("duration", 0)
         if self.end_sec > 0:
             self.duration = min(full_duration, self.end_sec) - self.start_sec
         else:
@@ -152,9 +155,6 @@ class FFmpegWorker(QThread):
             self.status_signal.emit("已终止处理")
 
 
-
-
-
 class SingleVideoApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -162,6 +162,7 @@ class SingleVideoApp(QWidget):
         self.setGeometry(400, 150, 700, 500)
         self.settings = QSettings("MyCompany", "SingleVideoExtractor")
         self.worker = None
+        self.current_video_info = None  # 🔹 缓存当前视频信息
         self.setup_ui()
         last_file = self.settings.value("last_file", "")
         if last_file and os.path.isfile(last_file):
@@ -393,29 +394,64 @@ class SingleVideoApp(QWidget):
         return "".join(parts)
 
     def load_video_info(self, path):
+        """
+        读取视频信息并缓存，保证 total_frames 为 int
+        """
         try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries",
-                   "format=duration:stream=width,height,avg_frame_rate,nb_frames", "-of", "json", path]
+            cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration:stream=width,height,avg_frame_rate,nb_frames",
+                "-of", "json", path
+            ]
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0: raise RuntimeError(result.stderr)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr)
+
             info = json.loads(result.stdout)
+
+            # 视频时长
             duration = float(info["format"]["duration"])
+
+            # 找到视频流
             streams = [s for s in info["streams"] if "width" in s]
-            if not streams: raise RuntimeError("未找到视频流")
+            if not streams:
+                raise RuntimeError("未找到视频流")
             stream = streams[0]
+
             width, height = stream.get("width", 0), stream.get("height", 0)
+
+            # 帧率
             fps_str = stream.get("avg_frame_rate", "0/1")
             fps = eval(fps_str) if fps_str != "0/0" else 0
-            total_frames = stream.get("nb_frames", "未知")
+
+            # 总帧数，安全转换为整数
+            nb_frames_raw = stream.get("nb_frames", "0")
+            try:
+                total_frames = int(nb_frames_raw)
+            except Exception:
+                total_frames = 0  # 如果 nb_frames 无效，则用 0
+
+            # 文件名和类型
             name = os.path.basename(path)
             ext = os.path.splitext(path)[1].lower().replace(".", "").upper()
+
+            # 显示在 UI
             self.info_name.setText(name)
             self.info_type.setText(ext)
             self.info_duration.setText(self.format_duration(duration))
             self.info_resolution.setText(f"{width} x {height}")
             self.info_fps.setText(f"{fps:.2f}" if fps else "未知")
-            self.info_frames.setText(total_frames)
+            self.info_frames.setText(str(total_frames))
+
+            # 缓存数据
             self.video_duration_seconds = int(duration)
+            self.current_video_info = {
+                "duration": duration,
+                "fps": fps,
+                "total_frames": total_frames
+            }
+
+            # 设置默认提取范围
             h, rem = divmod(self.video_duration_seconds, 3600)
             m, s = divmod(rem, 60)
             self.start_hour.setValue(0)
@@ -424,8 +460,10 @@ class SingleVideoApp(QWidget):
             self.end_hour.setValue(h)
             self.end_min.setValue(m)
             self.end_sec.setValue(s)
+
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法读取视频信息：\n{str(e)}")
+            # 重置 UI
             self.info_name.setText("-")
             self.info_type.setText("-")
             self.info_duration.setText("-")
@@ -439,6 +477,7 @@ class SingleVideoApp(QWidget):
             self.end_min.setValue(0)
             self.end_sec.setValue(0)
             self.video_duration_seconds = 0
+            self.current_video_info = None
 
     def get_selected_range_seconds(self):
         start_seconds = self.start_hour.value() * 3600 + self.start_min.value() * 60 + self.start_sec.value()
@@ -469,16 +508,25 @@ class SingleVideoApp(QWidget):
         quality = self.quality_input.value() if fmt.lower() == "jpg" else 0
         use_gpu = False
 
-        # 🔹 新增：生成视频专属输出文件夹
+        # 🔹 生成视频专属输出文件夹
         import datetime
         base_output = self.output_input.text()
         video_name = os.path.splitext(os.path.basename(self.file_input.text()))[0]
         timestamp = datetime.datetime.now().strftime("%Y年%m月%d日%H时%M分%S秒")
-
         output_dir = os.path.join(base_output, f"{video_name}_帧提取_{timestamp}")
         os.makedirs(output_dir, exist_ok=True)
 
-        # 使用新的 Worker
+        # 🔹 使用缓存的视频信息
+        video_info = getattr(self, "current_video_info", None)
+        if video_info is None or video_info.get("duration", 0) <= 0:
+            # 缓存无效，重新获取
+            video_info = {
+                "duration": getattr(self, "video_duration_seconds", 0),
+                "fps": float(self.info_fps.text()) if self.info_fps.text() != "未知" else 0,
+                "total_frames": int(self.info_frames.text()) if str(self.info_frames.text()).isdigit() else 0
+            }
+
+        # 🔹 创建 Worker
         self.worker = FFmpegWorker(
             video_path=self.file_input.text(),
             output_dir=output_dir,
@@ -488,6 +536,7 @@ class SingleVideoApp(QWidget):
             param=param,
             fmt=fmt,
             quality=quality,
+            video_info=video_info,
             use_gpu=use_gpu
         )
 
