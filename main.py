@@ -499,11 +499,27 @@ class SingleVideoApp(QWidget):
             self.current_video_info = None
 
     def get_selected_range_seconds(self):
+        """返回用户选择的起始和结束秒数，并进行合法性校验"""
         start_seconds = self.start_hour.value() * 3600 + self.start_min.value() * 60 + self.start_sec.value()
         end_seconds = self.end_hour.value() * 3600 + self.end_min.value() * 60 + self.end_sec.value()
+
         if start_seconds >= end_seconds:
             QMessageBox.warning(self, "错误", "起始时间必须小于结束时间")
             return None, None
+
+        total_duration = getattr(self, "video_duration_seconds", 0)
+        if total_duration <= 0:
+            QMessageBox.warning(self, "错误", "视频时长信息无效，请重新选择视频文件")
+            return None, None
+
+        if end_seconds > total_duration:
+            QMessageBox.warning(self, "错误", "结束时间不能超过视频总时长")
+            return None, None
+
+        if start_seconds < 0 or end_seconds < 0:
+            QMessageBox.warning(self, "错误", "时间范围不能为负数")
+            return None, None
+
         return start_seconds, end_seconds
 
     def start_extraction(self):
