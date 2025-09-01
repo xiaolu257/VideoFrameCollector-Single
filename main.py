@@ -59,9 +59,11 @@ class FFmpegWorker(QThread):
         self._stop = False
         self.proc = None
 
+        # 帧数统计
+        self.extracted_frames = 0
+
         # 🔹 使用传入的 video_info，只有在不合法时才获取
         if video_info is None or video_info.get("duration", 0) <= 0:
-            # video_info 无效，重新获取
             full_duration = get_duration(video_path)
             video_info = {"duration": full_duration, "fps": 0, "total_frames": 0}
         self.video_info = video_info
@@ -94,7 +96,7 @@ class FFmpegWorker(QThread):
                     total_frames_raw = int((self.end_sec - self.start_sec) * fps)
                     total_frames = max(1, total_frames_raw // self.param)
                 else:
-                    total_frames = 1  # 保底
+                    total_frames = 1
 
             cmd = [
                 "ffmpeg",
@@ -124,7 +126,6 @@ class FFmpegWorker(QThread):
                 universal_newlines=True
             )
 
-            extracted_frames = 0
             for line in iter(self.proc.stdout.readline, ''):
                 if self._stop:
                     self.proc.terminate()
@@ -133,22 +134,25 @@ class FFmpegWorker(QThread):
 
                 line = line.strip()
 
-                # 每N秒模式用 out_time_ms 计算进度
+                # 每N秒模式：用 out_time_ms 更新进度，同时统计帧数
                 if self.mode == "每N秒取1帧" and line.startswith("out_time_ms="):
                     try:
                         out_ms_str = line[len("out_time_ms="):]
                         out_ms = int(out_ms_str)
                         progress = min(int(out_ms / (self.duration * 1e6) * 100), 100)
                         self.progress_signal.emit(progress)
+
+                        # 估算帧数（已处理时长 / param）
+                        self.extracted_frames = min(total_frames, int((out_ms / 1e6) / self.param))
                     except Exception:
                         pass
 
-                # 每N帧模式用 frame= 计算进度
+                # 每N帧模式：用 frame= 更新进度，并记录帧数
                 elif self.mode == "每N帧取1帧" and line.startswith("frame="):
                     try:
                         frame_str = line[len("frame="):]
-                        extracted_frames = int(frame_str)
-                        progress = min(int(extracted_frames / total_frames * 100), 100)
+                        self.extracted_frames = int(frame_str)
+                        progress = min(int(self.extracted_frames / total_frames * 100), 100)
                         self.progress_signal.emit(progress)
                     except Exception:
                         pass
@@ -160,6 +164,16 @@ class FFmpegWorker(QThread):
             if not self._stop:
                 self.progress_signal.emit(100)
                 self.status_signal.emit("提取完成")
+
+                # 保底：没统计到就直接数文件数
+                if self.extracted_frames <= 0:
+                    try:
+                        self.extracted_frames = len([
+                            f for f in os.listdir(self.output_dir)
+                            if f.lower().endswith(f".{self.fmt}")
+                        ])
+                    except Exception:
+                        self.extracted_frames = 0
 
             self.finished_signal.emit()
 
@@ -597,11 +611,38 @@ class SingleVideoApp(QWidget):
         """提取完成或终止后恢复 UI"""
         self.toggle_ui_enabled(True)
         self.stop_btn.setEnabled(False)
+
         if self.worker and self.worker._stop:
             self.progress_label.setText("已终止处理")
         else:
             self.progress_label.setText("提取完成")
             self.progress_bar.setValue(100)
+
+            # 生成更详细的提示信息
+            video_name = os.path.basename(self.worker.video_path)
+            output_dir = self.worker.output_dir
+            frame_count = getattr(self.worker, "extracted_frames", None)  # 如果 worker 有统计帧数
+
+            details = f"视频文件：{video_name}\n输出目录：{output_dir}"
+            if frame_count is not None:
+                details += f"\n提取帧数：{frame_count}"
+
+            reply = QMessageBox.question(
+                self,
+                "提取完成",
+                f"帧提取已完成！\n\n{details}\n\n是否要打开输出文件夹？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                if sys.platform == "win32":
+                    os.startfile(output_dir)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", output_dir])
+                else:
+                    subprocess.run(["xdg-open", output_dir])
+
         self.worker = None
 
     def toggle_ui_enabled(self, enabled: bool):
