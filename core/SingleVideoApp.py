@@ -18,13 +18,17 @@ from core.util import format_duration
 def detect_gpu():
     """检测系统是否有可用 CUDA GPU"""
     try:
-        result = subprocess.run(["ffmpeg", "-hwaccels"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        result = subprocess.run(
+            ["ffmpeg", "-hwaccels"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=flags
+        )
         return "cuda" in result.stdout.lower()
     except:
         return False
-
-
-GPU_AVAILABLE = detect_gpu()  # 程序启动时检测一次
 
 
 class SingleVideoApp(QWidget):
@@ -422,7 +426,7 @@ class SingleVideoApp(QWidget):
         param = self.param_input.value()
         fmt = self.format_box.currentText()
         quality = self.quality_input.value() if fmt.lower() == "jpg" else 0
-        use_gpu = False
+        use_gpu = detect_gpu()
 
         base_output = Path(self.output_input.text())
         video_name = Path(self.file_input.text()).stem
