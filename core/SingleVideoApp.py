@@ -303,11 +303,23 @@ class SingleVideoApp(QWidget):
                 "-of", "json",
                 str(path)
             ]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr)
 
-            info = json.loads(result.stdout)
+            # ✅ Windows 下禁止弹出黑框
+            create_no_window = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=create_no_window
+            )
+            stdout, stderr = proc.communicate()
+
+            if proc.returncode != 0:
+                raise RuntimeError(stderr)
+
+            info = json.loads(stdout)
             duration = float(info["format"]["duration"])
 
             streams = [s for s in info["streams"] if "width" in s]

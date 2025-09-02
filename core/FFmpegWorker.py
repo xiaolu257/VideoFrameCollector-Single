@@ -1,9 +1,10 @@
 import subprocess
+import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from core.util import get_duration
+from core.util import get_duration, FFMPEG_BIN
 
 
 class FFmpegWorker(QThread):
@@ -64,7 +65,7 @@ class FFmpegWorker(QThread):
                     total_frames = 1
 
             cmd = [
-                "ffmpeg",
+                str(FFMPEG_BIN),
                 *input_options,
                 "-ss", str(self.start_sec),
                 "-to", str(self.end_sec),
@@ -80,6 +81,9 @@ class FFmpegWorker(QThread):
 
             self.status_signal.emit("提取中...")
 
+            # ✅ Windows 下禁止弹出黑框
+            creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
             self.proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -88,7 +92,9 @@ class FFmpegWorker(QThread):
                 encoding="utf-8",
                 errors="ignore",
                 bufsize=1,
-                universal_newlines=True
+                universal_newlines=True,
+                creationflags=creation_flags,
+                shell=False
             )
 
             for line in iter(self.proc.stdout.readline, ''):
@@ -99,20 +105,18 @@ class FFmpegWorker(QThread):
 
                 line = line.strip()
 
-                # 每N秒模式：用 out_time_ms 更新进度，同时统计帧数
+                # 每N秒模式
                 if self.mode == "每N秒取1帧" and line.startswith("out_time_ms="):
                     try:
                         out_ms_str = line[len("out_time_ms="):]
                         out_ms = int(out_ms_str)
                         progress = min(int(out_ms / (self.duration * 1e6) * 100), 100)
                         self.progress_signal.emit(progress)
-
-                        # 估算帧数（已处理时长 / param）
                         self.extracted_frames = min(total_frames, int((out_ms / 1e6) / self.param))
                     except Exception:
                         pass
 
-                # 每N帧模式：用 frame= 更新进度，并记录帧数
+                # 每N帧模式
                 elif self.mode == "每N帧取1帧" and line.startswith("frame="):
                     try:
                         frame_str = line[len("frame="):]
@@ -129,8 +133,7 @@ class FFmpegWorker(QThread):
             if not self._stop:
                 self.progress_signal.emit(100)
                 self.status_signal.emit("提取完成")
-
-                # 保底：没统计到就直接数文件数
+                # 保底统计帧数
                 if self.extracted_frames <= 0:
                     try:
                         self.extracted_frames = len([
